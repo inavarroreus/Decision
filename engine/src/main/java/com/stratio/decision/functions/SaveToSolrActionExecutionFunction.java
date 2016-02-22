@@ -15,6 +15,7 @@
  */
 package com.stratio.decision.functions;
 
+import com.google.common.collect.Iterables;
 import com.stratio.decision.commons.messages.ColumnNameTypeValue;
 import com.stratio.decision.commons.messages.StratioStreamingMessage;
 import com.stratio.decision.service.SolrOperationsService;
@@ -51,13 +52,15 @@ public class SaveToSolrActionExecutionFunction extends BaseActionExecutionFuncti
     private final String dataDir;
     private final String solrHost;
     private final Boolean isCloud;
+    private final Integer maxBatchSize;
 
-    public SaveToSolrActionExecutionFunction(String solrHost, Boolean isCloud, String dataDir) {
+    public SaveToSolrActionExecutionFunction(String solrHost, Boolean isCloud, String dataDir, Integer maxBatchSize) {
         this.solrHost = solrHost;
         this.dataDir = dataDir;
         this.isCloud = isCloud;
         this.solrOperationsService = new SolrOperationsService(solrHost, dataDir, isCloud);
         this.retryStrategy = new RetryStrategy();
+        this.maxBatchSize = maxBatchSize!=null?maxBatchSize:-1;
     }
 
     @Override
@@ -72,43 +75,99 @@ public class SaveToSolrActionExecutionFunction extends BaseActionExecutionFuncti
 
     @Override
     public void process(Iterable<StratioStreamingMessage> messages) throws Exception {
+
+
+        Integer partitionSize = maxBatchSize;
+
+        if (partitionSize <= 0){
+            partitionSize = Iterables.size(messages);
+        }
+
+        Iterable<List<StratioStreamingMessage>> partitionIterables =  Iterables.partition(messages, partitionSize);
+
         try {
-            Map<String, Collection<SolrInputDocument>> elemntsToInsert = new HashMap<String, Collection<SolrInputDocument>>();
-            int count = 0;
-            for (StratioStreamingMessage stratioStreamingMessage : messages) {
-                count += 1;
-                SolrInputDocument document = new SolrInputDocument();
-                document.addField("stratio_decision_id", System.nanoTime() + "-" + count);
-                for (ColumnNameTypeValue column : stratioStreamingMessage.getColumns()) {
-                    document.addField(column.getColumn(), column.getValue());
-                }
-                checkCore(stratioStreamingMessage);
-                Collection<SolrInputDocument> collection = elemntsToInsert.get(stratioStreamingMessage.getStreamName());
-                if (collection == null) {
-                    collection = new HashSet<>();
-                }
-                collection.add(document);
-                elemntsToInsert.put(stratioStreamingMessage.getStreamName(), collection);
-            }
-            while (retryStrategy.shouldRetry()) {
-                try {
-                    for (Map.Entry<String, Collection<SolrInputDocument>> elem : elemntsToInsert.entrySet()) {
-                        getSolrclient(elem.getKey()).add(elem.getValue());
+
+            for (List<StratioStreamingMessage> messageList : partitionIterables) {
+
+                Map<String, Collection<SolrInputDocument>> elemntsToInsert = new HashMap<String, Collection<SolrInputDocument>>();
+                int count = 0;
+                for (StratioStreamingMessage stratioStreamingMessage : messageList) {
+                    count += 1;
+                    SolrInputDocument document = new SolrInputDocument();
+                    document.addField("stratio_decision_id", System.nanoTime() + "-" + count);
+                    for (ColumnNameTypeValue column : stratioStreamingMessage.getColumns()) {
+                        document.addField(column.getColumn(), column.getValue());
                     }
-                    break;
-                } catch (SolrException e) {
+                    checkCore(stratioStreamingMessage);
+                    Collection<SolrInputDocument> collection = elemntsToInsert
+                            .get(stratioStreamingMessage.getStreamName());
+                    if (collection == null) {
+                        collection = new HashSet<>();
+                    }
+                    collection.add(document);
+                    elemntsToInsert.put(stratioStreamingMessage.getStreamName(), collection);
+                }
+                while (retryStrategy.shouldRetry()) {
                     try {
-                        log.error("Solr cloud status not yet properly initialized, retrying");
-                        retryStrategy.errorOccured();
-                    } catch (RuntimeException ex) {
-                        log.error("Error while initializing Solr Cloud core ", ex.getMessage());
+                        for (Map.Entry<String, Collection<SolrInputDocument>> elem : elemntsToInsert.entrySet()) {
+                            getSolrclient(elem.getKey()).add(elem.getValue());
+                        }
+                        break;
+                    } catch (SolrException e) {
+                        try {
+                            log.error("Solr cloud status not yet properly initialized, retrying");
+                            retryStrategy.errorOccured();
+                        } catch (RuntimeException ex) {
+                            log.error("Error while initializing Solr Cloud core ", ex.getMessage());
+                        }
                     }
                 }
+                flushClients();
             }
-            flushClients();
         } catch (Exception ex) {
             log.error("Error in Solr: " + ex.getMessage());
         }
+
+
+
+
+//        try {
+//            Map<String, Collection<SolrInputDocument>> elemntsToInsert = new HashMap<String, Collection<SolrInputDocument>>();
+//            int count = 0;
+//            for (StratioStreamingMessage stratioStreamingMessage : messages) {
+//                count += 1;
+//                SolrInputDocument document = new SolrInputDocument();
+//                document.addField("stratio_decision_id", System.nanoTime() + "-" + count);
+//                for (ColumnNameTypeValue column : stratioStreamingMessage.getColumns()) {
+//                    document.addField(column.getColumn(), column.getValue());
+//                }
+//                checkCore(stratioStreamingMessage);
+//                Collection<SolrInputDocument> collection = elemntsToInsert.get(stratioStreamingMessage.getStreamName());
+//                if (collection == null) {
+//                    collection = new HashSet<>();
+//                }
+//                collection.add(document);
+//                elemntsToInsert.put(stratioStreamingMessage.getStreamName(), collection);
+//            }
+//            while (retryStrategy.shouldRetry()) {
+//                try {
+//                    for (Map.Entry<String, Collection<SolrInputDocument>> elem : elemntsToInsert.entrySet()) {
+//                        getSolrclient(elem.getKey()).add(elem.getValue());
+//                    }
+//                    break;
+//                } catch (SolrException e) {
+//                    try {
+//                        log.error("Solr cloud status not yet properly initialized, retrying");
+//                        retryStrategy.errorOccured();
+//                    } catch (RuntimeException ex) {
+//                        log.error("Error while initializing Solr Cloud core ", ex.getMessage());
+//                    }
+//                }
+//            }
+//            flushClients();
+//        } catch (Exception ex) {
+//            log.error("Error in Solr: " + ex.getMessage());
+//        }
     }
 
     private void checkCore(StratioStreamingMessage message) throws IOException, SolrServerException, ParserConfigurationException, TransformerException, SAXException, URISyntaxException, InterruptedException {
