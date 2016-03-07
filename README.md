@@ -22,7 +22,7 @@ Decision Cep Engine components
 - [Api](api/README.md)
 - [Shell](shell/README.md)
 - [Examples](examples/README.md)
-- [Documentation](http://docs.stratio.com/modules/streaming-cep-engine/development/)
+- [Documentation](https://stratio.atlassian.net/wiki/display/DECISION0x9/Home)
 
 
 
